@@ -20,7 +20,7 @@ const config = {
   instagram: {
     appId: process.env.INSTAGRAM_APP_ID || '1477959410285896',
     appSecret: process.env.INSTAGRAM_APP_SECRET || 'fc7fbca3fbecd5bc6b06331bc4da17c9',
-    redirectUri: process.env.REDIRECT_URI || 'https://work-flow-ig-1.onrender.com/auth/callback'
+    redirectUri: process.env.REDIRECT_URI || 'https://your-domain.com/auth/instagram/callback' // UPDATED
   },
   facebook: {
     appId: process.env.FACEBOOK_APP_ID || '1256408305896903',
@@ -289,7 +289,7 @@ app.get('/api/stats', (req, res) => {
 
 // INSTAGRAM ROUTES
 
-// Instagram auth with the exact URL you provided
+// Instagram auth
 app.get('/auth/instagram', (req, res) => {
   try {
     const authUrl = `https://www.instagram.com/oauth/authorize?force_reauth=true&client_id=${config.instagram.appId}&redirect_uri=${encodeURIComponent(config.instagram.redirectUri)}&response_type=code&scope=instagram_business_basic%2Cinstagram_business_manage_messages%2Cinstagram_business_manage_comments%2Cinstagram_business_content_publish%2Cinstagram_business_manage_insights`;
@@ -302,8 +302,8 @@ app.get('/auth/instagram', (req, res) => {
   }
 });
 
-// Instagram callback - updated to match your redirect URI
-app.get('/auth/callback', async (req, res) => {
+// Instagram callback - UPDATED PATH
+app.get('/auth/instagram/callback', async (req, res) => {
   try {
     console.log('📬 Received Instagram callback:', req.query);
     const { code, error, error_reason } = req.query;
@@ -558,7 +558,8 @@ app.get('/instagram-dashboard', (req, res) => {
               document.getElementById('dm-username').value = '';
               document.getElementById('dm-message').value = '';
             } else {
-              throw new Error('Failed to send DM');
+              const errorData = await result.json();
+              throw new Error(errorData.error || 'Failed to send DM');
             }
           } catch (error) {
             alert('Error sending DM: ' + error.message);
@@ -675,15 +676,25 @@ app.post('/api/instagram/send-dm', async (req, res) => {
   } catch (err) {
     console.error('🔥 Instagram DM error:', serializeError(err));
     
-    // Better error handling for Instagram API
+    // Enhanced error handling
     let errorMessage = 'Failed to send DM';
+    let errorCode = 'UNKNOWN_ERROR';
+    
     if (err.response && err.response.data) {
       if (err.response.data.error && err.response.data.error.message) {
         errorMessage = err.response.data.error.message;
+        errorCode = err.response.data.error.code || errorCode;
+        
+        // Handle specific Instagram API errors
+        if (err.response.data.error.error_subcode === 2108006) {
+          errorMessage = "User doesn't allow message requests from businesses";
+        } else if (err.response.data.error.code === 10) {
+          errorMessage = "Message blocked by Instagram's content policies";
+        }
       }
     }
     
-    res.status(500).json({ error: errorMessage });
+    res.status(500).json({ error: errorMessage, code: errorCode });
   }
 });
 
@@ -856,6 +867,28 @@ app.get('/messenger-chat', (req, res) => {
         .message-input input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 20px; }
         .message-input button { padding: 12px 20px; background: #0084ff; color: white; border: none; border-radius: 20px; cursor: pointer; }
         .btn { padding: 8px 16px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; }
+        .policy-warning { 
+          position: fixed; 
+          bottom: 20px; 
+          left: 50%; 
+          transform: translateX(-50%); 
+          background: #ff6b6b; 
+          color: white; 
+          padding: 15px; 
+          border-radius: 10px; 
+          max-width: 500px; 
+          z-index: 1000;
+          box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+        }
+        .policy-warning button { 
+          background: white; 
+          color: #ff6b6b; 
+          border: none; 
+          padding: 5px 10px; 
+          border-radius: 5px; 
+          margin-top: 10px; 
+          cursor: pointer; 
+        }
       </style>
     </head>
     <body>
@@ -927,8 +960,16 @@ app.get('/messenger-chat', (req, res) => {
               input.value = '';
               loadMessages(); // Reload messages
             } else {
-              if (result.error === 'MESSAGING_WINDOW_EXPIRED') {
-                alert("Facebook policy: Can't send messages after 24 hours of user silence");
+              if (result.code === 'MESSAGING_WINDOW_EXPIRED') {
+                // Create persistent notification
+                const notification = document.createElement('div');
+                notification.className = 'policy-warning';
+                notification.innerHTML = \`
+                  <strong>Facebook Policy Restriction:</strong>
+                  <p>Cannot send messages after 24 hours of user silence</p>
+                  <button onclick="this.parentElement.remove()">Dismiss</button>
+                \`;
+                document.body.appendChild(notification);
               } else {
                 alert('Failed to send message: ' + (result.error || 'Unknown error'));
               }
@@ -954,6 +995,7 @@ app.get('/messenger-chat', (req, res) => {
   `);
 });
 
+// Messenger API endpoints
 app.get('/api/messenger/messages', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -1046,9 +1088,17 @@ app.post('/api/messenger/send', async (req, res) => {
 
     // Add message tag if outside 24-hour window
     if (hoursSinceLastMessage > 24) {
-      console.warn(`⚠️ Outside 24-hour window (${hoursSinceLastMessage.toFixed(1)} hours). Using message tag.`);
+      console.warn(`⚠️ Outside 24-hour window (${hoursSinceLastMessage.toFixed(1)} hours).`);
+      
+      // Determine appropriate tag based on message content
+      const tag = message.toLowerCase().includes('support') ? 'CUSTOMER_FEEDBACK' :
+                 message.toLowerCase().includes('order') ? 'POST_PURCHASE_UPDATE' :
+                 'CONFIRMED_EVENT_UPDATE';
+      
       messagePayload.messaging_type = "MESSAGE_TAG";
-      messagePayload.tag = "HUMAN_AGENT";
+      messagePayload.tag = tag;
+      
+      console.log(`🏷️ Using message tag: ${tag}`);
     }
 
     // Send message using the Facebook API
@@ -1084,10 +1134,6 @@ app.post('/api/messenger/send', async (req, res) => {
     res.status(500).json({ error: errorMessage, code: errorCode });
   }
 });
-
-// WHATSAPP ROUTES (unchanged from previous implementation)
-
-// ... [WhatsApp routes remain unchanged from previous code] ...
 
 // WEBHOOK ROUTES
 
@@ -1204,6 +1250,50 @@ app.post('/webhook/whatsapp', async (req, res) => {
     console.error('🔥 WhatsApp webhook processing error:', serializeError(err));
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// Instagram Webhook Setup Instructions
+app.get('/instagram-webhook-info', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Instagram Webhook Setup</title>
+      <style>
+        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .info-box { background: #e3f2fd; padding: 15px; border-radius: 8px; margin: 15px 0; }
+        .btn { display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="card">
+          <h1>📸 Instagram Webhook Setup</h1>
+          <p>Add these settings to your Facebook Developer Portal</p>
+          <a href="/dashboard" class="btn">← Back to Dashboard</a>
+        </div>
+        
+        <div class="card">
+          <h3>Webhook Configuration</h3>
+          <div class="info-box">
+            <p><strong>Callback URL:</strong> ${req.protocol}://${req.get('host')}/webhook/instagram</p>
+            <p><strong>Verify Token:</strong> ${config.webhook.verifyToken}</p>
+          </div>
+          
+          <h3>Setup Steps:</h3>
+          <ol>
+            <li>Go to your Facebook Developer Portal</li>
+            <li>Select your app → Instagram → Basic Display</li>
+            <li>Add the callback URL and verify token</li>
+            <li>Subscribe to: comments, messages, mentions</li>
+          </ol>
+        </div>
+      </div>
+    </body>
+    </html>
+  `);
 });
 
 // Messenger webhook setup instructions
