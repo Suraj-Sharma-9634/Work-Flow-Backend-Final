@@ -19,7 +19,7 @@ const PORT = process.env.PORT || 10000;
 const config = {
   instagram: {
     appId: process.env.INSTAGRAM_APP_ID || '1477959410285896',
-    appSecret: process.env.INSTAGRAM_APP_SECRET,
+    appSecret: process.env.INSTAGRAM_APP_SECRET || '8ccbc2e1a98cecf839bffa956928ba73',
     redirectUri: process.env.REDIRECT_URI || 'https://work-automation-platform.onrender.com/auth/instagram/callback'
   },
   facebook: {
