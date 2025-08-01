@@ -150,6 +150,555 @@ app.get('/', (req, res) => {
     </head>
     <body>
       <div class="container">
+        <h1>Work Automation</h1>
+        <p>Automate your social media interactions across Instagram, Facebook Messenger, and WhatsApp</p>
+        
+        <div class="platform-grid">
+          <div class="platform-card">
+            <h3>📸 Instagram</h3>
+            <p>Automate comments and DMs based on keywords</p>
+            <a href="/auth/instagram" class="btn">Connect Instagram</a>
+          </div>
+          
+          <div class="platform-card">
+            <h3>💬 Facebook Messenger</h3>
+            <p>Manage conversations and send automated messages</p>
+            <a href="/auth/facebook" class="btn">Connect Facebook</a>
+          </div>
+          
+          <div class="platform-card">
+            <h3>📱 WhatsApp Business</h3>
+            <p>AI-powered customer support automation</p>
+            <a href="/whatsapp-setup" class="btn">Setup WhatsApp</a>
+          </div>
+        </div>
+        
+        <a href="/dashboard" class="btn dashboard-btn">Go to Dashboard</a>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+// Dashboard
+app.get('/dashboard', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Work Dashboard</title>
+      <style>
+        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 30px; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
+        .stat-number { font-size: 2rem; font-weight: bold; color: #667eea; }
+        .actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+        .action-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .btn { display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 5px; }
+        .btn:hover { background: #5a67d8; }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1>Work Dashboard</h1>
+        <p>Manage your social media automation</p>
+      </div>
+      
+      <div class="stats">
+        <div class="stat-card">
+          <div class="stat-number" id="instagram-users">0</div>
+          <div>Instagram Users</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number" id="configurations">0</div>
+          <div>Active Automations</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number" id="messages-sent">0</div>
+          <div>Messages Sent</div>
+        </div>
+      </div>
+      
+      <div class="actions">
+        <div class="action-card">
+          <h3>📸 Instagram Automation</h3>
+          <p>Set up keyword-based comment responses</p>
+          <a href="/instagram-dashboard" class="btn">Manage Instagram</a>
+        </div>
+        
+        <div class="action-card">
+          <h3>💬 Messenger Management</h3>
+          <p>View and respond to Facebook messages</p>
+          <a href="/messenger-dashboard" class="btn">Manage Messenger</a>
+        </div>
+        
+        <div class="action-card">
+          <h3>📱 WhatsApp AI</h3>
+          <p>Configure AI responses for WhatsApp</p>
+          <a href="/whatsapp-dashboard" class="btn">Manage WhatsApp</a>
+        </div>
+      </div>
+      
+      <script>
+        // Update stats
+        fetch('/api/stats')
+          .then(r => r.json())
+          .then(data => {
+            document.getElementById('instagram-users').textContent = data.instagramUsers || 0;
+            document.getElementById('configurations').textContent = data.configurations || 0;
+            document.getElementById('messages-sent').textContent = data.messagesSent || 0;
+          });
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// API: Get stats
+app.get('/api/stats', (req, res) => {
+  res.json({
+    instagramUsers: users.size,
+    configurations: configurations.size,
+    messagesSent: 0 // You can track this separately
+  });
+});
+
+// INSTAGRAM ROUTES
+
+// Instagram auth
+app.get('/auth/instagram', (req, res) => {
+  try {
+    const authUrl = `https://www.instagram.com/oauth/authorize?force_reauth=true&client_id=${config.instagram.appId}&redirect_uri=${encodeURIComponent(config.instagram.redirectUri)}&response_type=code&scope=instagram_business_basic%2Cinstagram_business_manage_messages%2Cinstagram_business_manage_comments%2Cinstagram_business_content_publish%2Cinstagram_business_manage_insights`;
+    console.log('🔗 Redirecting to Instagram Auth URL:', authUrl);
+    res.redirect(authUrl);
+  } catch (err) {
+    console.error('🔥 Instagram login redirect error:', serializeError(err));
+    res.status(500).send('Server error during Instagram login');
+  }
+});
+
+// Instagram callback
+app.get('/auth/instagram/callback', async (req, res) => {
+  try {
+    console.log('📬 Received Instagram callback:', req.query);
+    const { code, error, error_reason } = req.query;
+    
+    if (error) {
+      throw new Error(`OAuth error: ${error_reason || 'unknown'} - ${error}`);
+    }
+
+    if (!code) {
+      throw new Error('Authorization code is missing');
+    }
+
+    if (usedAuthorizationCodes.has(code)) {
+      console.warn('⚠️ Authorization code reuse detected:', code);
+      for (const [userId, userData] of users.entries()) {
+        if (userData.code === code) {
+          console.log(`↩️ Redirecting reused code to existing user: ${userId}`);
+          return res.redirect(`/instagram-dashboard?user_id=${userId}`);
+        }
+      }
+      throw new Error('Authorization code has already been used');
+    }
+    
+    usedAuthorizationCodes.add(code);
+
+    // Exchange code for token
+    const tokenResponse = await axios.post('https://api.instagram.com/oauth/access_token', {
+      client_id: config.instagram.appId,
+      client_secret: config.instagram.appSecret,
+      grant_type: 'authorization_code',
+      redirect_uri: config.instagram.redirectUri,
+      code: code
+    }, {
+      headers: { 
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-IG-App-ID': config.instagram.appId
+      }
+    });
+
+    if (!tokenResponse.data || !tokenResponse.data.access_token) {
+      throw new Error('Invalid token response: ' + JSON.stringify(tokenResponse.data));
+    }
+
+    console.log('✅ Token exchange successful');
+    const access_token = tokenResponse.data.access_token;
+    const user_id = String(tokenResponse.data.user_id);
+
+    // Get user profile
+    const profileResponse = await axios.get(`https://graph.instagram.com/me`, {
+      params: { 
+        fields: 'id,username,profile_picture_url',
+        access_token: access_token
+      },
+      headers: { 'X-IG-App-ID': config.instagram.appId }
+    });
+
+    console.log(`👋 User authenticated: ${profileResponse.data.username} (ID: ${user_id})`);
+    
+    const userData = {
+      access_token,
+      username: profileResponse.data.username,
+      profile_pic: profileResponse.data.profile_picture_url,
+      instagram_id: user_id,
+      last_login: new Date(),
+      code,
+      platform: 'instagram'
+    };
+    users.set(user_id, userData);
+
+    res.redirect(`/instagram-dashboard?user_id=${user_id}`);
+  } catch (err) {
+    console.error('🔥 Instagram authentication error:', serializeError(err));
+    res.redirect(`/?error=instagram_auth_failed&message=${encodeURIComponent('Instagram login failed. Please try again.')}`);
+  }
+});
+
+// Instagram dashboard
+app.get('/instagram-dashboard', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Instagram Dashboard - Work</title>
+      <style>
+        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .btn { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        .btn:hover { background: #5a67d8; }
+        .post-item { border: 1px solid #eee; padding: 15px; margin: 10px 0; border-radius: 8px; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: 600; }
+        .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>📸 Instagram Automation Dashboard</h1>
+          <p>Manage your Instagram comment and DM automation</p>
+          <a href="/dashboard" class="btn">← Back to Dashboard</a>
+        </div>
+        
+        <div class="grid">
+          <div class="card">
+            <h3>Your Posts</h3>
+            <button onclick="loadPosts()" class="btn">Load Posts</button>
+            <div id="posts-container"></div>
+          </div>
+          
+          <div class="card">
+            <h3>Setup Automation</h3>
+            <div class="form-group">
+              <label>Select Post:</label>
+              <select id="post-select">
+                <option value="">Select a post first</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Keyword Trigger:</label>
+              <input type="text" id="keyword" placeholder="e.g., 'price', 'info', 'dm me'">
+            </div>
+            <div class="form-group">
+              <label>Auto Response:</label>
+              <textarea id="response" placeholder="Use {username} to mention the user" rows="4"></textarea>
+            </div>
+            <button onclick="saveConfiguration()" class="btn">Save Automation</button>
+          </div>
+        </div>
+        
+        <div class="card" style="margin-top: 20px;">
+          <h3>Send Manual DM</h3>
+          <div class="grid">
+            <div class="form-group">
+              <label>Username:</label>
+              <input type="text" id="dm-username" placeholder="@username">
+            </div>
+            <div class="form-group">
+              <label>Message:</label>
+              <textarea id="dm-message" rows="3"></textarea>
+            </div>
+          </div>
+          <button onclick="sendManualDM()" class="btn">Send DM</button>
+        </div>
+      </div>
+      
+      <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const userId = urlParams.get('user_id');
+        
+        if (!userId) {
+          alert('Please connect your Instagram account first');
+          window.location.href = '/';
+        }
+        
+        async function loadPosts() {
+          try {
+            const response = await fetch(\`/api/instagram/posts?userId=\${userId}\`);
+            const posts = await response.json();
+            
+            const container = document.getElementById('posts-container');
+            const select = document.getElementById('post-select');
+            
+            container.innerHTML = '';
+            select.innerHTML = '<option value="">Select a post</option>';
+            
+            posts.forEach(post => {
+              const postDiv = document.createElement('div');
+              postDiv.className = 'post-item';
+              postDiv.innerHTML = \`
+                <p><strong>Caption:</strong> \${post.caption.substring(0, 100)}...</p>
+                <p><strong>Type:</strong> \${post.media_type}</p>
+                <button onclick="viewComments('\${post.id}')" class="btn">View Comments</button>
+              \`;
+              container.appendChild(postDiv);
+              
+              const option = document.createElement('option');
+              option.value = post.id;
+              option.textContent = post.caption.substring(0, 50) + '...';
+              select.appendChild(option);
+            });
+          } catch (error) {
+            alert('Error loading posts: ' + error.message);
+          }
+        }
+        
+        async function viewComments(postId) {
+          try {
+            const response = await fetch(\`/api/instagram/comments?userId=\${userId}&postId=\${postId}\`);
+            const comments = await response.json();
+            
+            let commentsText = 'Comments:\\n\\n';
+            comments.forEach(comment => {
+              commentsText += \`@\${comment.username}: \${comment.text}\\n\\n\`;
+            });
+            
+            alert(commentsText || 'No comments found');
+          } catch (error) {
+            alert('Error loading comments: ' + error.message);
+          }
+        }
+        
+        async function saveConfiguration() {
+          const postId = document.getElementById('post-select').value;
+          const keyword = document.getElementById('keyword').value;
+          const response = document.getElementById('response').value;
+          
+          if (!postId || !keyword || !response) {
+            alert('Please fill all fields');
+            return;
+          }
+          
+          try {
+            const result = await fetch('/api/instagram/configure', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ userId, postId, keyword, response })
+            });
+            
+            if (result.ok) {
+              alert('Automation configured successfully!');
+              document.getElementById('keyword').value = '';
+              document.getElementById('response').value = '';
+            } else {
+              throw new Error('Configuration failed');
+            }
+          } catch (error) {
+            alert('Error saving configuration: ' + error.message);
+          }
+        }
+        
+        async function sendManualDM() {
+          const username = document.getElementById('dm-username').value.replace('@', '');
+          const message = document.getElementById('dm-message').value;
+          
+          if (!username || !message) {
+            alert('Please fill username and message');
+            return;
+          }
+          
+          try {
+            const result = await fetch('/api/instagram/send-dm', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ userId, username, message })
+            });
+            
+            if (result.ok) {
+              alert('DM sent successfully!');
+              document.getElementById('dm-username').value = '';
+              document.getElementById('dm-message').value = '';
+            } else {
+              throw new Error('Failed to send DM');
+            }
+          } catch (error) {
+            alert('Error sending DM: ' + error.message);
+          }
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// Instagram API endpoints
+app.get('/api/instagram/posts', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+    const user = users.get(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const response = await axios.get(`https://graph.instagram.com/v19.0/me/media`, {
+      params: {
+        fields: 'id,caption,media_url,media_type,thumbnail_url',
+        access_token: user.access_token
+      },
+      headers: { 'X-IG-App-ID': config.instagram.appId }
+    });
+
+    const processedPosts = response.data.data.map(post => ({
+      id: post.id,
+      caption: post.caption || '',
+      media_url: post.media_type === 'VIDEO' ? (post.thumbnail_url || '') : post.media_url,
+      media_type: post.media_type
+    }));
+
+    res.json(processedPosts);
+  } catch (err) {
+    console.error('🔥 Instagram posts error:', serializeError(err));
+    res.status(500).json({ error: 'Error fetching posts' });
+  }
+});
+
+app.get('/api/instagram/comments', async (req, res) => {
+  try {
+    const { userId, postId } = req.query;
+    if (!userId || !postId) {
+      return res.status(400).json({ error: 'User ID and Post ID required' });
+    }
+
+    const user = users.get(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const response = await axios.get(`https://graph.instagram.com/v19.0/${postId}/comments`, {
+      params: {
+        fields: 'id,text,username,timestamp',
+        access_token: user.access_token
+      },
+      headers: { 'X-IG-App-ID': config.instagram.appId }
+    });
+
+    res.json(response.data.data || []);
+  } catch (err) {
+    console.error('🔥 Instagram comments error:', serializeError(err));
+    res.status(500).json({ error: 'Error fetching comments' });
+  }
+});
+
+app.post('/api/instagram/configure', async (req, res) => {
+  try {
+    const { userId, postId, keyword, response } = req.body;
+    if (!userId || !postId || !keyword || !response) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const user = users.get(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    configurations.set(userId, { postId, keyword, response });
+    console.log(`⚙️ Instagram configuration saved for user ${userId} on post ${postId}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('🔥 Instagram configuration error:', serializeError(err));
+    res.status(500).json({ error: 'Configuration failed' });
+  }
+});
+
+// Fixed Instagram DM sending
+app.post('/api/instagram/send-dm', async (req, res) => {
+  try {
+    const { userId, username, message } = req.body;
+    if (!userId || !username || !message) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const user = users.get(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    console.log(`✉️ Sending Instagram DM to ${username}: ${message.substring(0, 50)}...`);
+    
+    // Use the correct Instagram API endpoint for sending messages
+    const response = await axios.post(`https://graph.facebook.com/v19.0/${user.instagram_id}/messages`, {
+      recipient: { username: username },
+      message: { text: message }
+    }, {
+      headers: {
+        'Authorization': `Bearer ${user.access_token}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
+
+    console.log(`✅ Instagram DM sent to ${username}`);
+    res.json({ success: true, data: response.data });
+  } catch (err) {
+    console.error('🔥 Instagram DM error:', serializeError(err));
+    
+    // Better error handling for Instagram API
+    let errorMessage = 'Failed to send DM';
+    if (err.response && err.response.data) {
+      if (err.response.data.error && err.response.data.error.message) {
+        errorMessage = err.response.data.error.message;
+      }
+    }
+    
+    res.status(500).json({ error: errorMessage });
+  }
+});
+
+// FACEBOOK MESSENGER ROUTES
+
+app.get('/auth/facebook', passport.authenticate('facebook', {
+  scope: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata', 'pages_read_engagement']
+}));
+
+app.get('/auth/facebook/callback', passport.authenticate('facebook', {
+  failureRedirect: '/?error=facebook_auth_failed'
+}), (req, res) => {
+  res.redirect('/messenger-dashboard');
+});
+
+app.get('/messenger-dashboard', async (req, res) => {
+  if (!req.isAuthenticated()) {
+    return res.redirect('/auth/facebook');
+  }
+  
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Messenger Dashboard - Work</title>
+      <style>
+        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .conversations { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .conversation-item { display: flex; align-items: center; padding: 15px; border-bottom: 1px solid #eee; cursor: pointer; }
+        .conversation-item:hover { background: #f8f9fa; }
+        .avatar { width: 50px; height: 50px; border-radius: 50%; background: #667eea; margin-right: 15px; }
+        .btn { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; text-decoration: none; display: inline-block; }
+        .btn:hover { background: #5a67d8; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
         <div class="header">
           <h1>💬 Facebook Messenger Dashboard</h1>
           <p>Welcome, ${req.user.displayName}! Manage your Facebook page conversations</p>
@@ -861,6 +1410,47 @@ app.get('/webhook/instagram', (req, res) => {
     } else {
       console.error(`❌ Instagram webhook verification failed. Expected: ${config.webhook.verifyToken}, Got: ${token}`);
       res.sendStatus(403);
+    }
+  } catch (err) {
+    console.error('🔥 Instagram webhook verification error:', serializeError(err));
+    res.sendStatus(500);
+  }
+});
+
+app.post('/webhook/instagram', async (req, res) => {
+  try {
+    console.log('📩 Instagram webhook event:', JSON.stringify(req.body, null, 2));
+    const { object, entry } = req.body;
+
+    if (object === 'instagram') {
+      for (const event of entry) {
+        if (event.changes && event.changes[0].field === 'comments') {
+          const commentData = event.changes[0].value;
+          await handleInstagramCommentEvent(commentData);
+        }
+      }
+    }
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('🔥 Instagram webhook processing error:', serializeError(err));
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// WhatsApp webhook
+app.get('/webhook/whatsapp', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  
+  console.log('🔔 WhatsApp webhook verification:', req.query);
+  
+  if (mode && token === config.whatsapp.verifyToken) {
+    console.log('✅ WhatsApp webhook verified');
+    res.status(200).send(challenge);
+  } else {
+    console.error(`❌ WhatsApp webhook verification failed. Expected: ${config.whatsapp.verifyToken}, Got: ${token}`);
+    res.sendStatus(403);
   }
 });
 
@@ -916,6 +1506,56 @@ app.post('/webhook/whatsapp', async (req, res) => {
     res.sendStatus(200);
   } catch (err) {
     console.error('🔥 WhatsApp webhook processing error:', serializeError(err));
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Messenger webhook
+app.get('/webhook/messenger', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  
+  console.log('🔔 Messenger webhook verification:', req.query);
+  
+  if (mode && token === config.webhook.verifyToken) {
+    console.log('✅ Messenger webhook verified');
+    res.status(200).send(challenge);
+  } else {
+    console.error(`❌ Messenger webhook verification failed. Expected: ${config.webhook.verifyToken}, Got: ${token}`);
+    res.sendStatus(403);
+  }
+});
+
+app.post('/webhook/messenger', (req, res) => {
+  try {
+    console.log('📩 Messenger webhook event:', JSON.stringify(req.body, null, 2));
+    
+    // Verify the webhook signature
+    const signature = req.headers['x-hub-signature-256'];
+    if (!signature) {
+      console.warn('⚠️ Missing Messenger webhook signature');
+      return res.sendStatus(400);
+    }
+    
+    // Process the webhook event
+    const body = req.body;
+    if (body.object === 'page') {
+      body.entry.forEach(entry => {
+        entry.messaging && entry.messaging.forEach(event => {
+          console.log('💬 Messenger event:', event);
+          
+          // Forward to frontend
+          if (frontendSocket) {
+            frontendSocket.emit('messenger-event', event);
+          }
+        });
+      });
+    }
+    
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('🔥 Messenger webhook processing error:', serializeError(err));
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1118,594 +1758,4 @@ server.listen(PORT, () => {
   console.log('   💬 Facebook Messenger - Chat management'); 
   console.log('   📱 WhatsApp - AI-powered responses');
   console.log('=====================================');
-});dStatus(403);
-    }
-  } catch (err) {
-    console.error('🔥 Instagram webhook verification error:', serializeError(err));
-    res.sendStatus(500);
-  }
 });
-
-app.post('/webhook/instagram', async (req, res) => {
-  try {
-    console.log('📩 Instagram webhook event:', JSON.stringify(req.body, null, 2));
-    const { object, entry } = req.body;
-
-    if (object === 'instagram') {
-      for (const event of entry) {
-        if (event.changes && event.changes[0].field === 'comments') {
-          const commentData = event.changes[0].value;
-          await handleInstagramCommentEvent(commentData);
-        }
-      }
-    }
-    res.sendStatus(200);
-  } catch (err) {
-    console.error('🔥 Instagram webhook processing error:', serializeError(err));
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// WhatsApp webhook
-app.get('/webhook/whatsapp', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-  
-  console.log('🔔 WhatsApp webhook verification:', req.query);
-  
-  if (mode && token === config.whatsapp.verifyToken) {
-    console.log('✅ WhatsApp webhook verified');
-    res.status(200).send(challenge);
-  } else {
-    console.error(`❌ WhatsApp webhook verification failed. Expected: ${config.whatsapp.verifyToken}, Got: ${token}`);
-    res.sen>
-      <div class="container">
-        <h1>Work Automation</h1>
-        <p>Automate your social media interactions across Instagram, Facebook Messenger, and WhatsApp</p>
-        
-        <div class="platform-grid">
-          <div class="platform-card">
-            <h3>📸 Instagram</h3>
-            <p>Automate comments and DMs based on keywords</p>
-            <a href="/auth/instagram" class="btn">Connect Instagram</a>
-          </div>
-          
-          <div class="platform-card">
-            <h3>💬 Facebook Messenger</h3>
-            <p>Manage conversations and send automated messages</p>
-            <a href="/auth/facebook" class="btn">Connect Facebook</a>
-          </div>
-          
-          <div class="platform-card">
-            <h3>📱 WhatsApp Business</h3>
-            <p>AI-powered customer support automation</p>
-            <a href="/whatsapp-setup" class="btn">Setup WhatsApp</a>
-          </div>
-        </div>
-        
-        <a href="/dashboard" class="btn dashboard-btn">Go to Dashboard</a>
-      </div>
-    </body>
-    </html>
-  `);
-});
-
-// Dashboard
-app.get('/dashboard', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Work Dashboard</title>
-      <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-        .header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 30px; }
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .stat-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
-        .stat-number { font-size: 2rem; font-weight: bold; color: #667eea; }
-        .actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-        .action-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .btn { display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 5px; }
-        .btn:hover { background: #5a67d8; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>Work Dashboard</h1>
-        <p>Manage your social media automation</p>
-      </div>
-      
-      <div class="stats">
-        <div class="stat-card">
-          <div class="stat-number" id="instagram-users">0</div>
-          <div>Instagram Users</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-number" id="configurations">0</div>
-          <div>Active Automations</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-number" id="messages-sent">0</div>
-          <div>Messages Sent</div>
-        </div>
-      </div>
-      
-      <div class="actions">
-        <div class="action-card">
-          <h3>📸 Instagram Automation</h3>
-          <p>Set up keyword-based comment responses</p>
-          <a href="/instagram-dashboard" class="btn">Manage Instagram</a>
-        </div>
-        
-        <div class="action-card">
-          <h3>💬 Messenger Management</h3>
-          <p>View and respond to Facebook messages</p>
-          <a href="/messenger-dashboard" class="btn">Manage Messenger</a>
-        </div>
-        
-        <div class="action-card">
-          <h3>📱 WhatsApp AI</h3>
-          <p>Configure AI responses for WhatsApp</p>
-          <a href="/whatsapp-dashboard" class="btn">Manage WhatsApp</a>
-        </div>
-      </div>
-      
-      <script>
-        // Update stats
-        fetch('/api/stats')
-          .then(r => r.json())
-          .then(data => {
-            document.getElementById('instagram-users').textContent = data.instagramUsers || 0;
-            document.getElementById('configurations').textContent = data.configurations || 0;
-            document.getElementById('messages-sent').textContent = data.messagesSent || 0;
-          });
-      </script>
-    </body>
-    </html>
-  `);
-});
-
-// API: Get stats
-app.get('/api/stats', (req, res) => {
-  res.json({
-    instagramUsers: users.size,
-    configurations: configurations.size,
-    messagesSent: 0 // You can track this separately
-  });
-});
-
-// INSTAGRAM ROUTES
-
-// Instagram auth
-app.get('/auth/instagram', (req, res) => {
-  try {
-    const authUrl = `https://www.instagram.com/oauth/authorize?force_reauth=true&client_id=${config.instagram.appId}&redirect_uri=${encodeURIComponent(config.instagram.redirectUri)}&response_type=code&scope=instagram_business_basic%2Cinstagram_business_manage_messages%2Cinstagram_business_manage_comments%2Cinstagram_business_content_publish%2Cinstagram_business_manage_insights`;
-    console.log('🔗 Redirecting to Instagram Auth URL:', authUrl);
-    res.redirect(authUrl);
-  } catch (err) {
-    console.error('🔥 Instagram login redirect error:', serializeError(err));
-    res.status(500).send('Server error during Instagram login');
-  }
-});
-
-// Instagram callback
-app.get('/auth/instagram/callback', async (req, res) => {
-  try {
-    console.log('📬 Received Instagram callback:', req.query);
-    const { code, error, error_reason } = req.query;
-    
-    if (error) {
-      throw new Error(`OAuth error: ${error_reason || 'unknown'} - ${error}`);
-    }
-
-    if (!code) {
-      throw new Error('Authorization code is missing');
-    }
-
-    if (usedAuthorizationCodes.has(code)) {
-      console.warn('⚠️ Authorization code reuse detected:', code);
-      for (const [userId, userData] of users.entries()) {
-        if (userData.code === code) {
-          console.log(`↩️ Redirecting reused code to existing user: ${userId}`);
-          return res.redirect(`/instagram-dashboard?user_id=${userId}`);
-        }
-      }
-      throw new Error('Authorization code has already been used');
-    }
-    
-    usedAuthorizationCodes.add(code);
-
-    // Exchange code for token
-    const tokenResponse = await axios.post('https://api.instagram.com/oauth/access_token', {
-      client_id: config.instagram.appId,
-      client_secret: config.instagram.appSecret,
-      grant_type: 'authorization_code',
-      redirect_uri: config.instagram.redirectUri,
-      code: code
-    }, {
-      headers: { 
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-IG-App-ID': config.instagram.appId
-      }
-    });
-
-    if (!tokenResponse.data || !tokenResponse.data.access_token) {
-      throw new Error('Invalid token response: ' + JSON.stringify(tokenResponse.data));
-    }
-
-    console.log('✅ Token exchange successful');
-    const access_token = tokenResponse.data.access_token;
-    const user_id = String(tokenResponse.data.user_id);
-
-    // Get user profile
-    const profileResponse = await axios.get(`https://graph.instagram.com/me`, {
-      params: { 
-        fields: 'id,username,profile_picture_url',
-        access_token: access_token
-      },
-      headers: { 'X-IG-App-ID': config.instagram.appId }
-    });
-
-    console.log(`👋 User authenticated: ${profileResponse.data.username} (ID: ${user_id})`);
-    
-    const userData = {
-      access_token,
-      username: profileResponse.data.username,
-      profile_pic: profileResponse.data.profile_picture_url,
-      instagram_id: user_id,
-      last_login: new Date(),
-      code,
-      platform: 'instagram'
-    };
-    users.set(user_id, userData);
-
-    res.redirect(`/instagram-dashboard?user_id=${user_id}`);
-  } catch (err) {
-    console.error('🔥 Instagram authentication error:', serializeError(err));
-    res.redirect(`/?error=instagram_auth_failed&message=${encodeURIComponent('Instagram login failed. Please try again.')}`);
-  }
-});
-
-// Instagram dashboard
-app.get('/instagram-dashboard', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Instagram Dashboard - Work</title>
-      <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .btn { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; }
-        .btn:hover { background: #5a67d8; }
-        .post-item { border: 1px solid #eee; padding: 15px; margin: 10px 0; border-radius: 8px; }
-        .form-group { margin-bottom: 15px; }
-        .form-group label { display: block; margin-bottom: 5px; font-weight: 600; }
-        .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="header">
-          <h1>📸 Instagram Automation Dashboard</h1>
-          <p>Manage your Instagram comment and DM automation</p>
-          <a href="/dashboard" class="btn">← Back to Dashboard</a>
-        </div>
-        
-        <div class="grid">
-          <div class="card">
-            <h3>Your Posts</h3>
-            <button onclick="loadPosts()" class="btn">Load Posts</button>
-            <div id="posts-container"></div>
-          </div>
-          
-          <div class="card">
-            <h3>Setup Automation</h3>
-            <div class="form-group">
-              <label>Select Post:</label>
-              <select id="post-select">
-                <option value="">Select a post first</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Keyword Trigger:</label>
-              <input type="text" id="keyword" placeholder="e.g., 'price', 'info', 'dm me'">
-            </div>
-            <div class="form-group">
-              <label>Auto Response:</label>
-              <textarea id="response" placeholder="Use {username} to mention the user" rows="4"></textarea>
-            </div>
-            <button onclick="saveConfiguration()" class="btn">Save Automation</button>
-          </div>
-        </div>
-        
-        <div class="card" style="margin-top: 20px;">
-          <h3>Send Manual DM</h3>
-          <div class="grid">
-            <div class="form-group">
-              <label>Username:</label>
-              <input type="text" id="dm-username" placeholder="@username">
-            </div>
-            <div class="form-group">
-              <label>Message:</label>
-              <textarea id="dm-message" rows="3"></textarea>
-            </div>
-          </div>
-          <button onclick="sendManualDM()" class="btn">Send DM</button>
-        </div>
-      </div>
-      
-      <script>
-        const urlParams = new URLSearchParams(window.location.search);
-        const userId = urlParams.get('user_id');
-        
-        if (!userId) {
-          alert('Please connect your Instagram account first');
-          window.location.href = '/';
-        }
-        
-        async function loadPosts() {
-          try {
-            const response = await fetch(\`/api/instagram/posts?userId=\${userId}\`);
-            const posts = await response.json();
-            
-            const container = document.getElementById('posts-container');
-            const select = document.getElementById('post-select');
-            
-            container.innerHTML = '';
-            select.innerHTML = '<option value="">Select a post</option>';
-            
-            posts.forEach(post => {
-              const postDiv = document.createElement('div');
-              postDiv.className = 'post-item';
-              postDiv.innerHTML = \`
-                <p><strong>Caption:</strong> \${post.caption.substring(0, 100)}...</p>
-                <p><strong>Type:</strong> \${post.media_type}</p>
-                <button onclick="viewComments('\${post.id}')" class="btn">View Comments</button>
-              \`;
-              container.appendChild(postDiv);
-              
-              const option = document.createElement('option');
-              option.value = post.id;
-              option.textContent = post.caption.substring(0, 50) + '...';
-              select.appendChild(option);
-            });
-          } catch (error) {
-            alert('Error loading posts: ' + error.message);
-          }
-        }
-        
-        async function viewComments(postId) {
-          try {
-            const response = await fetch(\`/api/instagram/comments?userId=\${userId}&postId=\${postId}\`);
-            const comments = await response.json();
-            
-            let commentsText = 'Comments:\\n\\n';
-            comments.forEach(comment => {
-              commentsText += \`@\${comment.username}: \${comment.text}\\n\\n\`;
-            });
-            
-            alert(commentsText || 'No comments found');
-          } catch (error) {
-            alert('Error loading comments: ' + error.message);
-          }
-        }
-        
-        async function saveConfiguration() {
-          const postId = document.getElementById('post-select').value;
-          const keyword = document.getElementById('keyword').value;
-          const response = document.getElementById('response').value;
-          
-          if (!postId || !keyword || !response) {
-            alert('Please fill all fields');
-            return;
-          }
-          
-          try {
-            const result = await fetch('/api/instagram/configure', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ userId, postId, keyword, response })
-            });
-            
-            if (result.ok) {
-              alert('Automation configured successfully!');
-              document.getElementById('keyword').value = '';
-              document.getElementById('response').value = '';
-            } else {
-              throw new Error('Configuration failed');
-            }
-          } catch (error) {
-            alert('Error saving configuration: ' + error.message);
-          }
-        }
-        
-        async function sendManualDM() {
-          const username = document.getElementById('dm-username').value.replace('@', '');
-          const message = document.getElementById('dm-message').value;
-          
-          if (!username || !message) {
-            alert('Please fill username and message');
-            return;
-          }
-          
-          try {
-            const result = await fetch('/api/instagram/send-dm', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ userId, username, message })
-            });
-            
-            if (result.ok) {
-              alert('DM sent successfully!');
-              document.getElementById('dm-username').value = '';
-              document.getElementById('dm-message').value = '';
-            } else {
-              throw new Error('Failed to send DM');
-            }
-          } catch (error) {
-            alert('Error sending DM: ' + error.message);
-          }
-        }
-      </script>
-    </body>
-    </html>
-  `);
-});
-
-// Instagram API endpoints
-app.get('/api/instagram/posts', async (req, res) => {
-  try {
-    const { userId } = req.query;
-    if (!userId) return res.status(400).json({ error: 'User ID required' });
-
-    const user = users.get(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    const response = await axios.get(`https://graph.instagram.com/v19.0/me/media`, {
-      params: {
-        fields: 'id,caption,media_url,media_type,thumbnail_url',
-        access_token: user.access_token
-      },
-      headers: { 'X-IG-App-ID': config.instagram.appId }
-    });
-
-    const processedPosts = response.data.data.map(post => ({
-      id: post.id,
-      caption: post.caption || '',
-      media_url: post.media_type === 'VIDEO' ? (post.thumbnail_url || '') : post.media_url,
-      media_type: post.media_type
-    }));
-
-    res.json(processedPosts);
-  } catch (err) {
-    console.error('🔥 Instagram posts error:', serializeError(err));
-    res.status(500).json({ error: 'Error fetching posts' });
-  }
-});
-
-app.get('/api/instagram/comments', async (req, res) => {
-  try {
-    const { userId, postId } = req.query;
-    if (!userId || !postId) {
-      return res.status(400).json({ error: 'User ID and Post ID required' });
-    }
-
-    const user = users.get(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    const response = await axios.get(`https://graph.instagram.com/v19.0/${postId}/comments`, {
-      params: {
-        fields: 'id,text,username,timestamp',
-        access_token: user.access_token
-      },
-      headers: { 'X-IG-App-ID': config.instagram.appId }
-    });
-
-    res.json(response.data.data || []);
-  } catch (err) {
-    console.error('🔥 Instagram comments error:', serializeError(err));
-    res.status(500).json({ error: 'Error fetching comments' });
-  }
-});
-
-app.post('/api/instagram/configure', async (req, res) => {
-  try {
-    const { userId, postId, keyword, response } = req.body;
-    if (!userId || !postId || !keyword || !response) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    const user = users.get(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    configurations.set(userId, { postId, keyword, response });
-    console.log(`⚙️ Instagram configuration saved for user ${userId} on post ${postId}`);
-    res.json({ success: true });
-  } catch (err) {
-    console.error('🔥 Instagram configuration error:', serializeError(err));
-    res.status(500).json({ error: 'Configuration failed' });
-  }
-});
-
-// Fixed Instagram DM sending
-app.post('/api/instagram/send-dm', async (req, res) => {
-  try {
-    const { userId, username, message } = req.body;
-    if (!userId || !username || !message) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    const user = users.get(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    console.log(`✉️ Sending Instagram DM to ${username}: ${message.substring(0, 50)}...`);
-    
-    // Use the correct Instagram API endpoint for sending messages
-    const response = await axios.post(`https://graph.facebook.com/v19.0/${user.instagram_id}/messages`, {
-      recipient: { username: username },
-      message: { text: message }
-    }, {
-      headers: {
-        'Authorization': `Bearer ${user.access_token}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 15000
-    });
-
-    console.log(`✅ Instagram DM sent to ${username}`);
-    res.json({ success: true, data: response.data });
-  } catch (err) {
-    console.error('🔥 Instagram DM error:', serializeError(err));
-    
-    // Better error handling for Instagram API
-    let errorMessage = 'Failed to send DM';
-    if (err.response && err.response.data) {
-      if (err.response.data.error && err.response.data.error.message) {
-        errorMessage = err.response.data.error.message;
-      }
-    }
-    
-    res.status(500).json({ error: errorMessage });
-  }
-});
-
-// FACEBOOK MESSENGER ROUTES
-
-app.get('/auth/facebook', passport.authenticate('facebook', {
-  scope: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata', 'pages_read_engagement']
-}));
-
-app.get('/auth/facebook/callback', passport.authenticate('facebook', {
-  failureRedirect: '/?error=facebook_auth_failed'
-}), (req, res) => {
-  res.redirect('/messenger-dashboard');
-});
-
-app.get('/messenger-dashboard', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.redirect('/auth/facebook');
-  }
-  
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Messenger Dashboard - Work</title>
-      <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        .conversations { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .conversation-item { display: flex; align-items: center; padding: 15px; border-bottom: 1px solid #eee; cursor: pointer; }
-        .conversation-item:hover { background: #f8f9fa; }
-        .avatar { width: 50px; height: 50px; border-radius: 50%; background: #667eea; margin-right: 15px; }
-        .btn { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; text-decoration: none; display: inline-block; }
-        .btn:hover { background: #5a67d8; }
-      </style>
-    </head>
-    <body
