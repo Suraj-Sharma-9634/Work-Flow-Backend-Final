@@ -65,11 +65,17 @@ app.use(passport.session());
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((obj, done) => done(null, obj));
 
+// Updated Facebook Strategy with Instagram permissions
 passport.use(new FacebookStrategy({
   clientID: config.facebook.appId,
   clientSecret: config.facebook.appSecret,
   callbackURL: config.facebook.callbackUrl,
-  profileFields: ['id', 'displayName', 'emails']
+  profileFields: ['id', 'displayName', 'emails'],
+  enableProof: true,
+  graphAPIVersion: 'v19.0',
+  scope: ['instagram_basic', 'instagram_manage_messages', 'pages_show_list'],
+  authType: 'reauthenticate',
+  authNonce: 'secure_nonce_value' // Add a strong nonce in production
 }, (accessToken, refreshToken, profile, done) => {
   profile.accessToken = accessToken;
   return done(null, profile);
@@ -266,10 +272,16 @@ app.get('/api/stats', (req, res) => {
 
 // INSTAGRAM ROUTES
 
-// Instagram auth
+// Instagram auth with proper permissions
 app.get('/auth/instagram', (req, res) => {
   try {
-    const authUrl = `https://www.instagram.com/oauth/authorize?force_reauth=true&client_id=${config.instagram.appId}&redirect_uri=${encodeURIComponent(config.instagram.redirectUri)}&response_type=code&scope=instagram_business_basic%2Cinstagram_business_manage_messages%2Cinstagram_business_manage_comments%2Cinstagram_business_content_publish%2Cinstagram_business_manage_insights`;
+    const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?` +
+      `client_id=${config.facebook.appId}` +
+      `&redirect_uri=${encodeURIComponent(config.instagram.redirectUri)}` +
+      `&scope=instagram_basic,instagram_manage_comments,instagram_manage_messages` +
+      `&response_type=code` +
+      `&state=state123abc`;
+    
     console.log('🔗 Redirecting to Instagram Auth URL:', authUrl);
     res.redirect(authUrl);
   } catch (err) {
@@ -306,16 +318,12 @@ app.get('/auth/instagram/callback', async (req, res) => {
     usedAuthorizationCodes.add(code);
 
     // Exchange code for token
-    const tokenResponse = await axios.post('https://api.instagram.com/oauth/access_token', {
-      client_id: config.instagram.appId,
-      client_secret: config.instagram.appSecret,
-      grant_type: 'authorization_code',
-      redirect_uri: config.instagram.redirectUri,
-      code: code
-    }, {
-      headers: { 
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-IG-App-ID': config.instagram.appId
+    const tokenResponse = await axios.get('https://graph.facebook.com/v19.0/oauth/access_token', {
+      params: {
+        client_id: config.facebook.appId,
+        client_secret: config.facebook.appSecret,
+        redirect_uri: config.instagram.redirectUri,
+        code: code
       }
     });
 
@@ -325,27 +333,43 @@ app.get('/auth/instagram/callback', async (req, res) => {
 
     console.log('✅ Token exchange successful');
     const access_token = tokenResponse.data.access_token;
-    const user_id = String(tokenResponse.data.user_id);
 
     // Get user profile
-    const profileResponse = await axios.get(`https://graph.instagram.com/me`, {
-      params: { 
-        fields: 'id,username,profile_picture_url',
+    const profileResponse = await axios.get('https://graph.facebook.com/me', {
+      params: {
+        fields: 'id,name',
         access_token: access_token
-      },
-      headers: { 'X-IG-App-ID': config.instagram.appId }
+      }
     });
 
-    console.log(`👋 User authenticated: ${profileResponse.data.username} (ID: ${user_id})`);
+    const user_id = String(profileResponse.data.id);
+    console.log(`👋 User authenticated: ${profileResponse.data.name} (ID: ${user_id})`);
     
+    // Get Instagram business account
+    const accountsResponse = await axios.get(`https://graph.facebook.com/v19.0/me/accounts?access_token=${access_token}`);
+    const instagramAccount = accountsResponse.data.data.find(acc => acc.instagram_business_account);
+    
+    if (!instagramAccount) {
+      throw new Error('No Instagram business account connected');
+    }
+    
+    const instagramId = instagramAccount.instagram_business_account.id;
+    const instagramProfile = await axios.get(`https://graph.facebook.com/v19.0/${instagramId}`, {
+      params: {
+        fields: 'username,profile_picture_url',
+        access_token: access_token
+      }
+    });
+
     const userData = {
       access_token,
-      username: profileResponse.data.username,
-      profile_pic: profileResponse.data.profile_picture_url,
-      instagram_id: user_id,
+      username: instagramProfile.data.username,
+      profile_pic: instagramProfile.data.profile_picture_url,
+      instagram_id: instagramId,
       last_login: new Date(),
       code,
-      platform: 'instagram'
+      platform: 'instagram',
+      page_token: instagramAccount.access_token
     };
     users.set(user_id, userData);
 
@@ -555,15 +579,14 @@ app.get('/api/instagram/posts', async (req, res) => {
     const user = users.get(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const response = await axios.get(`https://graph.instagram.com/v19.0/me/media`, {
+    const response = await axios.get(`https://graph.facebook.com/v19.0/${user.instagram_id}/media`, {
       params: {
         fields: 'id,caption,media_url,media_type,thumbnail_url',
-        access_token: user.access_token
-      },
-      headers: { 'X-IG-App-ID': config.instagram.appId }
+        access_token: user.page_token
+      }
     });
 
-    const processedPosts = response.data.data.map(post => ({
+    const processedPosts = (response.data.data || []).map(post => ({
       id: post.id,
       caption: post.caption || '',
       media_url: post.media_type === 'VIDEO' ? (post.thumbnail_url || '') : post.media_url,
@@ -587,12 +610,11 @@ app.get('/api/instagram/comments', async (req, res) => {
     const user = users.get(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const response = await axios.get(`https://graph.instagram.com/v19.0/${postId}/comments`, {
+    const response = await axios.get(`https://graph.facebook.com/v19.0/${postId}/comments`, {
       params: {
         fields: 'id,text,username,timestamp',
-        access_token: user.access_token
-      },
-      headers: { 'X-IG-App-ID': config.instagram.appId }
+        access_token: user.page_token
+      }
     });
 
     res.json(response.data.data || []);
@@ -621,7 +643,7 @@ app.post('/api/instagram/configure', async (req, res) => {
   }
 });
 
-// Fixed Instagram DM sending
+// Fixed Instagram DM sending with correct endpoint
 app.post('/api/instagram/send-dm', async (req, res) => {
   try {
     const { userId, username, message } = req.body;
@@ -634,17 +656,21 @@ app.post('/api/instagram/send-dm', async (req, res) => {
 
     console.log(`✉️ Sending Instagram DM to ${username}: ${message.substring(0, 50)}...`);
     
-    // Use the correct Instagram API endpoint for sending messages
-    const response = await axios.post(`https://graph.facebook.com/v19.0/${user.instagram_id}/messages`, {
-      recipient: { username: username },
-      message: { text: message }
-    }, {
-      headers: {
-        'Authorization': `Bearer ${user.access_token}`,
-        'Content-Type': 'application/json'
+    // Send message through Instagram API
+    const response = await axios.post(
+      `https://graph.facebook.com/v19.0/${user.instagram_id}/messages`,
+      {
+        recipient: { username },
+        message: { text: message }
       },
-      timeout: 15000
-    });
+      {
+        headers: {
+          'Authorization': `Bearer ${user.page_token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
 
     console.log(`✅ Instagram DM sent to ${username}`);
     res.json({ success: true, data: response.data });
@@ -765,35 +791,32 @@ app.get('/api/messenger/conversations', async (req, res) => {
       return res.json({ conversations: [] });
     }
 
-    const response = await axios.get(`https://graph.facebook.com/${page.id}/conversations`, {
-      params: { access_token: page.access_token }
+    const response = await axios.get(`https://graph.facebook.com/v19.0/${page.id}/conversations`, {
+      params: { 
+        fields: 'senders,messages{message}',
+        access_token: page.access_token 
+      }
     });
 
     const conversations = [];
     for (let convo of response.data.data || []) {
       try {
-        const convoDetail = await axios.get(`https://graph.facebook.com/${convo.id}`, {
+        const senderId = convo.senders.data[0].id;
+        const lastMessage = convo.messages.data[0].message;
+        
+        const userInfo = await axios.get(`https://graph.facebook.com/v19.0/${senderId}`, {
           params: {
-            fields: 'participants',
+            fields: 'name,picture',
             access_token: page.access_token
           }
         });
         
-        const recipient = convoDetail.data.participants?.data?.find(p => p.id !== req.user.id);
-        if (recipient) {
-          const userInfo = await axios.get(`https://graph.facebook.com/${recipient.id}`, {
-            params: {
-              fields: 'name,picture',
-              access_token: page.access_token
-            }
-          });
-          
-          conversations.push({
-            id: convo.id,
-            name: userInfo.data.name || recipient.id,
-            avatar: userInfo.data.picture?.data?.url || ''
-          });
-        }
+        conversations.push({
+          id: convo.id,
+          name: userInfo.data.name || senderId,
+          avatar: userInfo.data.picture?.data?.url || '',
+          lastMessage: lastMessage || 'No messages'
+        });
       } catch (err) {
         console.error('Error processing conversation:', err.message);
       }
@@ -939,7 +962,7 @@ app.get('/api/messenger/messages', async (req, res) => {
       return res.status(404).json({ error: 'Page not found' });
     }
 
-    const response = await axios.get(`https://graph.facebook.com/${id}/messages`, {
+    const response = await axios.get(`https://graph.facebook.com/v19.0/${id}/messages`, {
       params: {
         fields: 'message,from,created_time',
         access_token: page.access_token
@@ -948,7 +971,7 @@ app.get('/api/messenger/messages', async (req, res) => {
 
     const messages = await Promise.all((response.data.data || []).map(async msg => {
       try {
-        const userResponse = await axios.get(`https://graph.facebook.com/${msg.from.id}`, {
+        const userResponse = await axios.get(`https://graph.facebook.com/v19.0/${msg.from.id}`, {
           params: {
             fields: 'name,picture',
             access_token: page.access_token
@@ -994,7 +1017,7 @@ app.post('/api/messenger/send', async (req, res) => {
     }
 
     // Get conversation participants to find recipient
-    const convoResponse = await axios.get(`https://graph.facebook.com/${id}`, {
+    const convoResponse = await axios.get(`https://graph.facebook.com/v19.0/${id}`, {
       params: {
         fields: 'participants',
         access_token: page.access_token
@@ -1586,7 +1609,7 @@ async function handleInstagramCommentEvent(commentData) {
             message: { text: messageText }
           }, {
             headers: {
-              'Authorization': `Bearer ${user.access_token}`,
+              'Authorization': `Bearer ${user.page_token}`,
               'Content-Type': 'application/json'
             },
             timeout: 15000
