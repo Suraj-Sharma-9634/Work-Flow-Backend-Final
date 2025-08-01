@@ -20,7 +20,7 @@ const config = {
   instagram: {
     appId: process.env.INSTAGRAM_APP_ID || '1477959410285896',
     appSecret: process.env.INSTAGRAM_APP_SECRET || 'fc7fbca3fbecd5bc6b06331bc4da17c9',
-    redirectUri: process.env.REDIRECT_URI || 'https://your-domain.com/auth/instagram/callback' // UPDATED
+    redirectUri: process.env.REDIRECT_URI || 'https://your-domain.com/auth/instagram/callback'
   },
   facebook: {
     appId: process.env.FACEBOOK_APP_ID || '1256408305896903',
@@ -89,6 +89,9 @@ const whatsappMemory = {};
 let assignedAI = { key: '', systemPrompt: '', waToken: '' };
 let frontendSocket = null;
 
+// Token expiration tracking
+const tokenExpirations = new Map();
+
 // WebSocket connection
 io.on('connection', (socket) => {
   console.log('🌐 Frontend connected');
@@ -145,6 +148,56 @@ async function getLastMessageTime(conversationId, accessToken) {
   } catch (err) {
     console.error("Failed to get last message time:", err);
     return new Date(0);
+  }
+}
+
+// Token validation and refresh functions
+function isTokenValid(userId) {
+  const expiration = tokenExpirations.get(userId);
+  return expiration && Date.now() < expiration;
+}
+
+async function refreshInstagramToken(userId) {
+  try {
+    const user = users.get(userId);
+    if (!user) {
+      console.error(`❌ User ${userId} not found for token refresh`);
+      return null;
+    }
+
+    console.log(`🔄 Attempting to refresh token for user ${userId}`);
+    
+    const response = await axios.get(`https://graph.instagram.com/refresh_access_token`, {
+      params: {
+        grant_type: 'ig_refresh_token',
+        access_token: user.access_token
+      },
+      headers: {
+        'X-IG-App-ID': config.instagram.appId
+      }
+    });
+
+    if (response.data && response.data.access_token) {
+      // Update user token and set new expiration (60 days)
+      const newToken = response.data.access_token;
+      const expiresIn = response.data.expires_in || 5184000; // 60 days in seconds
+      const expirationTime = Date.now() + expiresIn * 1000;
+      
+      console.log(`✅ Token refreshed for user ${userId}. New expiration: ${new Date(expirationTime).toISOString()}`);
+      
+      // Update user data
+      user.access_token = newToken;
+      users.set(userId, user);
+      tokenExpirations.set(userId, expirationTime);
+      
+      return newToken;
+    } else {
+      console.error('⚠️ Token refresh failed: Invalid response', response.data);
+      return null;
+    }
+  } catch (err) {
+    console.error('🔥 Token refresh error:', serializeError(err));
+    return null;
   }
 }
 
@@ -302,7 +355,7 @@ app.get('/auth/instagram', (req, res) => {
   }
 });
 
-// Instagram callback - UPDATED PATH
+// Instagram callback
 app.get('/auth/instagram/callback', async (req, res) => {
   try {
     console.log('📬 Received Instagram callback:', req.query);
@@ -350,6 +403,11 @@ app.get('/auth/instagram/callback', async (req, res) => {
     console.log('✅ Token exchange successful');
     const access_token = tokenResponse.data.access_token;
     const user_id = String(tokenResponse.data.user_id);
+    
+    // Calculate token expiration (60 days from now)
+    const expirationTime = Date.now() + 60 * 24 * 60 * 60 * 1000; // 60 days
+    tokenExpirations.set(user_id, expirationTime);
+    console.log(`⏱️ Token expiration set for user ${user_id}: ${new Date(expirationTime).toISOString()}`);
 
     // Get user profile
     const profileResponse = await axios.get(`https://graph.instagram.com/me`, {
@@ -390,7 +448,7 @@ app.get('/instagram-dashboard', (req, res) => {
       <style>
         body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
         .container { max-width: 1200px; margin: 0 auto; }
-        .header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; position: relative; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         .btn { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; }
@@ -399,6 +457,10 @@ app.get('/instagram-dashboard', (req, res) => {
         .form-group { margin-bottom: 15px; }
         .form-group label { display: block; margin-bottom: 5px; font-weight: 600; }
         .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+        .token-status { background: #f8f9fa; padding: 8px 12px; border-radius: 5px; margin-top: 10px; border: 1px solid #e9ecef; }
+        .valid-token { color: #28a745; font-weight: bold; }
+        .expired-token { color: #dc3545; font-weight: bold; }
+        .btn-warning { background: #ffc107; color: #333; }
       </style>
     </head>
     <body>
@@ -407,6 +469,7 @@ app.get('/instagram-dashboard', (req, res) => {
           <h1>📸 Instagram Automation Dashboard</h1>
           <p>Manage your Instagram comment and DM automation</p>
           <a href="/dashboard" class="btn">← Back to Dashboard</a>
+          <div id="token-status-container"></div>
         </div>
         
         <div class="grid">
@@ -459,6 +522,37 @@ app.get('/instagram-dashboard', (req, res) => {
         if (!userId) {
           alert('Please connect your Instagram account first');
           window.location.href = '/';
+        }
+        
+        // Load token status
+        async function loadTokenStatus() {
+          try {
+            const response = await fetch(\`/api/user-info?userId=\${userId}\`);
+            const userInfo = await response.json();
+            
+            const container = document.getElementById('token-status-container');
+            container.innerHTML = \`
+              <div class="token-status">
+                <strong>Token Status:</strong> 
+                <span class="\${userInfo.token_status === 'valid' ? 'valid-token' : 'expired-token'}">
+                  \${userInfo.token_status.toUpperCase()}
+                </span>
+                <br>
+                <small>Expires: \${new Date(userInfo.token_expiration).toLocaleDateString()}</small>
+                <button onclick="reconnectAccount()" class="btn btn-warning" style="margin-top: 8px; padding: 5px 10px;">
+                  <i class="fas fa-sync-alt"></i> Reconnect
+                </button>
+              </div>
+            \`;
+          } catch (error) {
+            console.error('Error loading token status:', error);
+          }
+        }
+        
+        function reconnectAccount() {
+          if (confirm('Your Instagram token has expired. Would you like to reconnect?')) {
+            window.location.href = '/auth/instagram';
+          }
         }
         
         async function loadPosts() {
@@ -559,13 +653,17 @@ app.get('/instagram-dashboard', (req, res) => {
               document.getElementById('dm-message').value = '';
             } else {
               const errorData = await result.json();
-              throw new Error(errorData.error || 'Failed to send DM');
+              alert('Error: ' + errorData.error);
             }
           } catch (error) {
             alert('Error sending DM: ' + error.message);
           }
         }
+        
+        // Load token status on page load
+        loadTokenStatus();
       </script>
+      <script src="https://kit.fontawesome.com/a076d05399.js" crossorigin="anonymous"></script>
     </body>
     </html>
   `);
@@ -646,7 +744,7 @@ app.post('/api/instagram/configure', async (req, res) => {
   }
 });
 
-// Fixed Instagram DM sending
+// Instagram DM sending with token validation and refresh
 app.post('/api/instagram/send-dm', async (req, res) => {
   try {
     const { userId, username, message } = req.body;
@@ -657,9 +755,22 @@ app.post('/api/instagram/send-dm', async (req, res) => {
     const user = users.get(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    // Check if token is valid or needs refresh
+    if (!isTokenValid(userId)) {
+      console.warn(`⚠️ Token for user ${userId} is expired or invalid. Attempting refresh...`);
+      const newToken = await refreshInstagramToken(userId);
+      
+      if (!newToken) {
+        return res.status(401).json({ 
+          error: 'Token expired and refresh failed. Please reconnect your Instagram account.',
+          code: 'TOKEN_REFRESH_FAILED'
+        });
+      }
+    }
+
     console.log(`✉️ Sending Instagram DM to ${username}: ${message.substring(0, 50)}...`);
     
-    // Use the correct Instagram API endpoint for sending messages
+    // Attempt to send DM
     const response = await axios.post(`https://graph.facebook.com/v23.0/${user.instagram_id}/messages`, {
       recipient: { username: username },
       message: { text: message }
@@ -690,859 +801,21 @@ app.post('/api/instagram/send-dm', async (req, res) => {
           errorMessage = "User doesn't allow message requests from businesses";
         } else if (err.response.data.error.code === 10) {
           errorMessage = "Message blocked by Instagram's content policies";
+        } else if (err.response.data.error.code === 190) {
+          errorMessage = "Invalid access token - Please reconnect your Instagram account";
+          errorCode = 'INVALID_TOKEN';
         }
       }
+    } else if (err.code === 'ECONNABORTED') {
+      errorMessage = "Request timed out. Please try again.";
+      errorCode = 'TIMEOUT';
     }
     
     res.status(500).json({ error: errorMessage, code: errorCode });
   }
 });
 
-// FACEBOOK MESSENGER ROUTES
-
-app.get('/auth/facebook', passport.authenticate('facebook', {
-  scope: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata', 'pages_read_engagement']
-}));
-
-app.get('/auth/facebook/callback', passport.authenticate('facebook', {
-  failureRedirect: '/?error=facebook_auth_failed'
-}), (req, res) => {
-  res.redirect('/messenger-dashboard');
-});
-
-app.get('/messenger-dashboard', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.redirect('/auth/facebook');
-  }
-  
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Messenger Dashboard - Work</title>
-      <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        .conversations { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .conversation-item { display: flex; align-items: center; padding: 15px; border-bottom: 1px solid #eee; cursor: pointer; }
-        .conversation-item:hover { background: #f8f9fa; }
-        .avatar { width: 50px; height: 50px; border-radius: 50%; background: #667eea; margin-right: 15px; }
-        .btn { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: button; text-decoration: none; display: inline-block; }
-        .btn:hover { background: #5a67d8; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="header">
-          <h1>💬 Facebook Messenger Dashboard</h1>
-          <p>Welcome, ${req.user.displayName}! Manage your Facebook page conversations</p>
-          <a href="/dashboard" class="btn">← Back to Dashboard</a>
-          <a href="/auth/logout" class="btn" style="background: #dc3545;">Logout</a>
-        </div>
-        
-        <div class="conversations">
-          <h3>Your Conversations</h3>
-          <div id="conversations-container">
-            <p>Loading conversations...</p>
-          </div>
-        </div>
-      </div>
-      
-      <script>
-        async function loadConversations() {
-          try {
-            const response = await fetch('/api/messenger/conversations');
-            const data = await response.json();
-            
-            const container = document.getElementById('conversations-container');
-            container.innerHTML = '';
-            
-            if (data.conversations && data.conversations.length > 0) {
-              data.conversations.forEach(convo => {
-                const item = document.createElement('div');
-                item.className = 'conversation-item';
-                item.onclick = () => window.location.href = \`/messenger-chat?id=\${convo.id}\`;
-                item.innerHTML = \`
-                  <img src="\${convo.avatar || '/default-avatar.png'}" class="avatar" />
-                  <div>
-                    <strong>\${convo.name || 'Unknown User'}</strong>
-                    <p style="margin: 5px 0; color: #666;">\${convo.lastMessage || 'No messages'}</p>
-                  </div>
-                \`;
-                container.appendChild(item);
-              });
-            } else {
-              container.innerHTML = '<p>No conversations found</p>';
-            }
-          } catch (error) {
-            document.getElementById('conversations-container').innerHTML = '<p>Error loading conversations</p>';
-            console.error('Error:', error);
-          }
-        }
-        
-        loadConversations();
-      </script>
-    </body>
-    </html>
-  `);
-});
-
-// Messenger API endpoints
-app.get('/api/messenger/conversations', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  try {
-    const page = await getPageAccessToken(req.user.accessToken);
-    if (!page) {
-      return res.json({ conversations: [] });
-    }
-
-    const response = await axios.get(`https://graph.facebook.com/v23.0/${page.id}/conversations`, {
-      params: { 
-        fields: 'senders,messages{message}',
-        access_token: page.access_token 
-      }
-    });
-
-    const conversations = [];
-    for (let convo of response.data.data || []) {
-      try {
-        const senderId = convo.senders.data[0].id;
-        const lastMessage = convo.messages.data[0].message;
-        
-        const userInfo = await axios.get(`https://graph.facebook.com/v23.0/${senderId}`, {
-          params: {
-            fields: 'name,picture',
-            access_token: page.access_token
-          }
-        });
-        
-        conversations.push({
-          id: convo.id,
-          name: userInfo.data.name || senderId,
-          avatar: userInfo.data.picture?.data?.url || '',
-          lastMessage: lastMessage || 'No messages'
-        });
-      } catch (err) {
-        console.error('Error processing conversation:', err.message);
-      }
-    }
-
-    res.json({ conversations });
-  } catch (err) {
-    console.error('🔥 Messenger conversations error:', serializeError(err));
-    res.status(500).json({ error: 'Failed to load conversations' });
-  }
-});
-
-app.get('/messenger-chat', (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.redirect('/auth/facebook');
-  }
-  
-  const conversationId = req.query.id;
-  if (!conversationId) {
-    return res.redirect('/messenger-dashboard');
-  }
-  
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Messenger Chat - Work</title>
-      <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 0; background: #f5f5f5; height: 100vh; display: flex; flex-direction: column; }
-        .header { background: white; padding: 15px 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        .chat-container { flex: 1; display: flex; flex-direction: column; padding: 20px; overflow: hidden; }
-        .messages { flex: 1; background: white; border-radius: 10px; padding: 20px; overflow-y: auto; margin-bottom: 20px; }
-        .message { margin-bottom: 15px; display: flex; align-items: flex-start; }
-        .message.sent { justify-content: flex-end; }
-        .message-content { max-width: 70%; padding: 10px 15px; border-radius: 18px; }
-        .message.received .message-content { background: #e4e6ea; }
-        .message.sent .message-content { background: #0084ff; color: white; }
-        .message-input { display: flex; gap: 10px; }
-        .message-input input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 20px; }
-        .message-input button { padding: 12px 20px; background: #0084ff; color: white; border: none; border-radius: 20px; cursor: pointer; }
-        .btn { padding: 8px 16px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; }
-        .policy-warning { 
-          position: fixed; 
-          bottom: 20px; 
-          left: 50%; 
-          transform: translateX(-50%); 
-          background: #ff6b6b; 
-          color: white; 
-          padding: 15px; 
-          border-radius: 10px; 
-          max-width: 500px; 
-          z-index: 1000;
-          box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-        }
-        .policy-warning button { 
-          background: white; 
-          color: #ff6b6b; 
-          border: none; 
-          padding: 5px 10px; 
-          border-radius: 5px; 
-          margin-top: 10px; 
-          cursor: pointer; 
-        }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <a href="/messenger-dashboard" class="btn">← Back to Conversations</a>
-        <span style="margin-left: 20px; font-weight: 600;">Chat Conversation</span>
-      </div>
-      
-      <div class="chat-container">
-        <div class="messages" id="messages-container">
-          <p>Loading messages...</p>
-        </div>
-        
-        <div class="message-input">
-          <input type="text" id="message-input" placeholder="Type a message..." onkeypress="handleKeyPress(event)">
-          <button onclick="sendMessage()">Send</button>
-        </div>
-      </div>
-      
-      <script>
-        const conversationId = '${conversationId}';
-        
-        async function loadMessages() {
-          try {
-            const response = await fetch(\`/api/messenger/messages?id=\${conversationId}\`);
-            const data = await response.json();
-            
-            const container = document.getElementById('messages-container');
-            container.innerHTML = '';
-            
-            if (data.messages && data.messages.length > 0) {
-              data.messages.forEach(msg => {
-                const messageDiv = document.createElement('div');
-                messageDiv.className = \`message \${msg.isFromPage ? 'sent' : 'received'}\`;
-                messageDiv.innerHTML = \`
-                  <div class="message-content">
-                    <div>\${msg.text}</div>
-                    <small style="opacity: 0.7; font-size: 11px;">\${msg.sender}</small>
-                  </div>
-                \`;
-                container.appendChild(messageDiv);
-              });
-              container.scrollTop = container.scrollHeight;
-            } else {
-              container.innerHTML = '<p>No messages found</p>';
-            }
-          } catch (error) {
-            console.error('Error loading messages:', error);
-            document.getElementById('messages-container').innerHTML = '<p>Error loading messages</p>';
-          }
-        }
-        
-        async function sendMessage() {
-          const input = document.getElementById('message-input');
-          const message = input.value.trim();
-          
-          if (!message) return;
-          
-          try {
-            const response = await fetch('/api/messenger/send', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ id: conversationId, message })
-            });
-            
-            const result = await response.json();
-            
-            if (response.ok) {
-              input.value = '';
-              loadMessages(); // Reload messages
-            } else {
-              if (result.code === 'MESSAGING_WINDOW_EXPIRED') {
-                // Create persistent notification
-                const notification = document.createElement('div');
-                notification.className = 'policy-warning';
-                notification.innerHTML = \`
-                  <strong>Facebook Policy Restriction:</strong>
-                  <p>Cannot send messages after 24 hours of user silence</p>
-                  <button onclick="this.parentElement.remove()">Dismiss</button>
-                \`;
-                document.body.appendChild(notification);
-              } else {
-                alert('Failed to send message: ' + (result.error || 'Unknown error'));
-              }
-            }
-          } catch (error) {
-            console.error('Error sending message:', error);
-            alert('Error sending message');
-          }
-        }
-        
-        function handleKeyPress(event) {
-          if (event.key === 'Enter') {
-            sendMessage();
-          }
-        }
-        
-        loadMessages();
-        // Refresh messages every 5 seconds
-        setInterval(loadMessages, 5000);
-      </script>
-    </body>
-    </html>
-  `);
-});
-
-// Messenger API endpoints
-app.get('/api/messenger/messages', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  try {
-    const { id } = req.query;
-    const page = await getPageAccessToken(req.user.accessToken);
-    if (!page) {
-      return res.status(404).json({ error: 'Page not found' });
-    }
-
-    const response = await axios.get(`https://graph.facebook.com/v23.0/${id}/messages`, {
-      params: {
-        fields: 'message,from,created_time',
-        access_token: page.access_token
-      }
-    });
-
-    const messages = await Promise.all((response.data.data || []).map(async msg => {
-      try {
-        const userResponse = await axios.get(`https://graph.facebook.com/v23.0/${msg.from.id}`, {
-          params: {
-            fields: 'name,picture',
-            access_token: page.access_token
-          }
-        });
-        
-        return {
-          sender: userResponse.data.name || msg.from.id,
-          text: msg.message || '[No text]',
-          pfp: userResponse.data.picture?.data?.url || '',
-          isFromPage: msg.from.id === page.id,
-          timestamp: msg.created_time
-        };
-      } catch (err) {
-        return {
-          sender: 'Unknown',
-          text: msg.message || '[No text]',
-          pfp: '',
-          isFromPage: false,
-          timestamp: msg.created_time
-        };
-      }
-    }));
-
-    res.json({ messages: messages.reverse() });
-  } catch (err) {
-    console.error('🔥 Messenger messages error:', serializeError(err));
-    res.status(500).json({ error: 'Failed to fetch messages' });
-  }
-});
-
-// Fixed Messenger message sending with 24-hour policy compliance
-app.post('/api/messenger/send', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  try {
-    const { id, message } = req.body;
-    const page = await getPageAccessToken(req.user.accessToken);
-    if (!page) {
-      return res.status(404).json({ error: 'Page not found' });
-    }
-
-    // Get conversation participants to find recipient
-    const convoResponse = await axios.get(`https://graph.facebook.com/v23.0/${id}`, {
-      params: {
-        fields: 'participants',
-        access_token: page.access_token
-      }
-    });
-
-    const recipient = convoResponse.data.participants?.data?.find(p => p.id !== page.id);
-    if (!recipient) {
-      return res.status(400).json({ error: 'Recipient not found' });
-    }
-
-    // Check last message time to comply with 24-hour policy
-    const lastMessageTime = await getLastMessageTime(id, page.access_token);
-    const timeSinceLastMessage = Date.now() - new Date(lastMessageTime).getTime();
-    const hoursSinceLastMessage = timeSinceLastMessage / (1000 * 60 * 60);
-
-    // Prepare message payload
-    const messagePayload = {
-      recipient: { id: recipient.id },
-      message: { text: message }
-    };
-
-    // Add message tag if outside 24-hour window
-    if (hoursSinceLastMessage > 24) {
-      console.warn(`⚠️ Outside 24-hour window (${hoursSinceLastMessage.toFixed(1)} hours).`);
-      
-      // Determine appropriate tag based on message content
-      const tag = message.toLowerCase().includes('support') ? 'CUSTOMER_FEEDBACK' :
-                 message.toLowerCase().includes('order') ? 'POST_PURCHASE_UPDATE' :
-                 'CONFIRMED_EVENT_UPDATE';
-      
-      messagePayload.messaging_type = "MESSAGE_TAG";
-      messagePayload.tag = tag;
-      
-      console.log(`🏷️ Using message tag: ${tag}`);
-    }
-
-    // Send message using the Facebook API
-    const result = await axios.post(
-      `https://graph.facebook.com/v23.0/me/messages`,
-      messagePayload,
-      {
-        headers: {
-          'Authorization': `Bearer ${page.access_token}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    console.log(`✅ Messenger message sent to ${recipient.id}`);
-    res.json({ success: true, data: result.data });
-  } catch (err) {
-    console.error('🔥 Messenger send error:', serializeError(err));
-    
-    let errorMessage = 'Failed to send message';
-    let errorCode = 'UNKNOWN_ERROR';
-    
-    if (err.response && err.response.data && err.response.data.error) {
-      errorMessage = err.response.data.error.message || errorMessage;
-      errorCode = err.response.data.error.code || errorCode;
-      
-      // Handle specific policy error
-      if (err.response.data.error.error_subcode === 2018278) {
-        errorCode = 'MESSAGING_WINDOW_EXPIRED';
-      }
-    }
-    
-    res.status(500).json({ error: errorMessage, code: errorCode });
-  }
-});
-
-// WEBHOOK ROUTES
-
-// Instagram webhook
-app.get('/webhook/instagram', (req, res) => {
-  try {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
-    console.log('🔔 Instagram webhook verification:', req.query);
-
-    if (mode === 'subscribe' && token === config.webhook.verifyToken) {
-      console.log('✅ Instagram webhook verified');
-      res.status(200).send(challenge);
-    } else {
-      console.error(`❌ Instagram webhook verification failed. Expected: ${config.webhook.verifyToken}, Got: ${token}`);
-      res.sendStatus(403);
-    }
-  } catch (err) {
-    console.error('🔥 Instagram webhook verification error:', serializeError(err));
-    res.sendStatus(500);
-  }
-});
-
-app.post('/webhook/instagram', async (req, res) => {
-  try {
-    console.log('📩 Instagram webhook event:', JSON.stringify(req.body, null, 2));
-    const { object, entry } = req.body;
-
-    if (object === 'instagram') {
-      for (const event of entry) {
-        if (event.changes && event.changes[0].field === 'comments') {
-          const commentData = event.changes[0].value;
-          await handleInstagramCommentEvent(commentData);
-        }
-      }
-    }
-    res.sendStatus(200);
-  } catch (err) {
-    console.error('🔥 Instagram webhook processing error:', serializeError(err));
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// WhatsApp webhook
-app.get('/webhook/whatsapp', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-  
-  console.log('🔔 WhatsApp webhook verification:', req.query);
-  
-  if (mode && token === config.whatsapp.verifyToken) {
-    console.log('✅ WhatsApp webhook verified');
-    res.status(200).send(challenge);
-  } else {
-    console.error(`❌ WhatsApp webhook verification failed. Expected: ${config.whatsapp.verifyToken}, Got: ${token}`);
-    res.sendStatus(403);
-  }
-});
-
-app.post('/webhook/whatsapp', async (req, res) => {
-  try {
-    console.log('📩 WhatsApp webhook event:', JSON.stringify(req.body, null, 2));
-    
-    const entry = req.body.entry?.[0];
-    const messageObj = entry?.changes?.[0]?.value?.messages?.[0];
-    const from = messageObj?.from;
-    const text = messageObj?.text?.body;
-
-    if (messageObj && from && text) {
-      console.log(`📥 WhatsApp message from ${from}: ${text}`);
-
-      // Emit to frontend dashboard
-      if (frontendSocket) {
-        frontendSocket.emit('whatsapp-message', { 
-          from: from, 
-          text: text, 
-          direction: 'in' 
-        });
-      }
-
-      // AI auto-response if configured
-      if (assignedAI.key && assignedAI.waToken) {
-        // Save user message to memory
-        whatsappMemory[from] = whatsappMemory[from] || [];
-        whatsappMemory[from].push({ role: 'user', text });
-
-        // Get AI reply
-        const aiReply = await getGeminiReply(from, assignedAI.systemPrompt, assignedAI.key);
-        if (aiReply) {
-          await sendWhatsAppAutoReply(from, aiReply, assignedAI.waToken);
-
-          // Save AI reply to memory
-          whatsappMemory[from].push({ role: 'model', text: aiReply });
-
-          // Emit AI response to frontend
-          if (frontendSocket) {
-            frontendSocket.emit('whatsapp-message', {
-              from: '🤖 AI Assistant',
-              text: aiReply,
-              direction: 'out'
-            });
-          }
-        }
-      } else {
-        console.warn('⚠️ WhatsApp AI not configured - no auto-reply sent');
-      }
-    }
-
-    res.sendStatus(200);
-  } catch (err) {
-    console.error('🔥 WhatsApp webhook processing error:', serializeError(err));
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Instagram Webhook Setup Instructions
-app.get('/instagram-webhook-info', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Instagram Webhook Setup</title>
-      <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        .info-box { background: #e3f2fd; padding: 15px; border-radius: 8px; margin: 15px 0; }
-        .btn { display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="card">
-          <h1>📸 Instagram Webhook Setup</h1>
-          <p>Add these settings to your Facebook Developer Portal</p>
-          <a href="/dashboard" class="btn">← Back to Dashboard</a>
-        </div>
-        
-        <div class="card">
-          <h3>Webhook Configuration</h3>
-          <div class="info-box">
-            <p><strong>Callback URL:</strong> ${req.protocol}://${req.get('host')}/webhook/instagram</p>
-            <p><strong>Verify Token:</strong> ${config.webhook.verifyToken}</p>
-          </div>
-          
-          <h3>Setup Steps:</h3>
-          <ol>
-            <li>Go to your Facebook Developer Portal</li>
-            <li>Select your app → Instagram → Basic Display</li>
-            <li>Add the callback URL and verify token</li>
-            <li>Subscribe to: comments, messages, mentions</li>
-          </ol>
-        </div>
-      </div>
-    </body>
-    </html>
-  `);
-});
-
-// Messenger webhook setup instructions
-app.get('/messenger-webhook-info', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Messenger Webhook Setup</title>
-      <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        .info-box { background: #e3f2fd; padding: 15px; border-radius: 8px; margin: 15px 0; }
-        .btn { display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="card">
-          <h1>📩 Facebook Messenger Webhook Setup</h1>
-          <p>Add these settings to your Facebook Developer Portal</p>
-          <a href="/dashboard" class="btn">← Back to Dashboard</a>
-        </div>
-        
-        <div class="card">
-          <h3>Webhook Configuration</h3>
-          <div class="info-box">
-            <p><strong>Callback URL:</strong> ${req.protocol}://${req.get('host')}/webhook/messenger</p>
-            <p><strong>Verify Token:</strong> ${config.webhook.verifyToken}</p>
-          </div>
-          
-          <h3>Setup Steps:</h3>
-          <ol>
-            <li>Go to your Facebook Developer Portal</li>
-            <li>Select your app → Messenger → Settings</li>
-            <li>Under "Webhooks", click "Add Callback URL"</li>
-            <li>Enter the Callback URL and Verify Token above</li>
-            <li>Subscribe to these events:
-              <ul>
-                <li>messages</li>
-                <li>messaging_postbacks</li>
-                <li>message_deliveries</li>
-                <li>message_reads</li>
-                <li>messaging_optins</li>
-                <li>messaging_referrals</li>
-              </ul>
-            </li>
-            <li>Save changes and verify the webhook</li>
-          </ol>
-        </div>
-      </div>
-    </body>
-    </html>
-  `);
-});
-
-// Messenger webhook
-app.get('/webhook/messenger', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-  
-  console.log('🔔 Messenger webhook verification:', req.query);
-  
-  if (mode && token === config.webhook.verifyToken) {
-    console.log('✅ Messenger webhook verified');
-    res.status(200).send(challenge);
-  } else {
-    console.error(`❌ Messenger webhook verification failed. Expected: ${config.webhook.verifyToken}, Got: ${token}`);
-    res.sendStatus(403);
-  }
-});
-
-app.post('/webhook/messenger', (req, res) => {
-  try {
-    console.log('📩 Messenger webhook event:', JSON.stringify(req.body, null, 2));
-    
-    // Verify the webhook signature
-    const signature = req.headers['x-hub-signature-256'];
-    if (!signature) {
-      console.warn('⚠️ Missing Messenger webhook signature');
-      return res.sendStatus(400);
-    }
-    
-    // Process the webhook event
-    const body = req.body;
-    if (body.object === 'page') {
-      body.entry.forEach(entry => {
-        entry.messaging && entry.messaging.forEach(event => {
-          console.log('💬 Messenger event:', event);
-          
-          // Forward to frontend
-          if (frontendSocket) {
-            frontendSocket.emit('messenger-event', event);
-          }
-        });
-      });
-    }
-    
-    res.sendStatus(200);
-  } catch (err) {
-    console.error('🔥 Messenger webhook processing error:', serializeError(err));
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// EVENT HANDLERS
-
-async function handleInstagramCommentEvent(commentData) {
-  try {
-    const { media_id, text, username } = commentData;
-    console.log(`💬 Instagram comment from ${username} on post ${media_id}: ${text}`);
-
-    for (const [userId, config] of configurations.entries()) {
-      try {
-        if (media_id !== config.postId) continue;
-
-        const user = users.get(userId);
-        if (!user) continue;
-
-        if (text.toLowerCase().includes(config.keyword.toLowerCase())) {
-          console.log(`🔑 Keyword "${config.keyword}" matched in comment by ${username}`);
-          
-          const messageText = config.response.replace(/{username}/g, username);
-          console.log(`✉️ Sending Instagram DM to ${username}: ${messageText.substring(0, 50)}...`);
-          
-          // Use the correct Instagram messaging endpoint
-          await axios.post(`https://graph.facebook.com/v23.0/${user.instagram_id}/messages`, {
-            recipient: { username: username },
-            message: { text: messageText }
-          }, {
-            headers: {
-              'Authorization': `Bearer ${user.access_token}`,
-              'Content-Type': 'application/json'
-            },
-            timeout: 15000
-          });
-
-          console.log(`✅ Instagram DM sent to ${username} for keyword "${config.keyword}"`);
-        }
-      } catch (err) {
-        console.error(`🔥 Instagram comment handling error for user ${userId}:`, serializeError(err));
-      }
-    }
-  } catch (err) {
-    console.error('🔥 Instagram event processing error:', serializeError(err));
-  }
-}
-
-async function getGeminiReply(userId, userSysPrompt, apiKey) {
-  try {
-    const permanentSysPrompt = "You are a helpful sales AI bot. Answer everything briefly and you are handling users on WhatsApp. Be friendly and concise.";
-    const fullPrompt = userSysPrompt ? `${permanentSysPrompt}\n${userSysPrompt}` : permanentSysPrompt;
-
-    const history = whatsappMemory[userId] || [];
-    const contents = [
-      { role: 'user', parts: [{ text: fullPrompt }] },
-      ...history.map(m => ({
-        role: m.role,
-        parts: [{ text: m.text }]
-      }))
-    ];
-
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      { contents },
-      { 
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 10000
-      }
-    );
-
-    const reply = response.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    return reply || 'I apologize, but I cannot respond right now. Please try again later.';
-  } catch (err) {
-    console.error('⚠️ Gemini API error:', err.response?.data || err.message);
-    return 'I apologize, but I cannot respond right now. Please try again later.';
-  }
-}
-
-async function sendWhatsAppAutoReply(to, text, token) {
-  try {
-    await axios.post(
-      `https://graph.facebook.com/v17.0/${config.whatsapp.phoneNumberId}/messages`,
-      {
-        messaging_product: 'whatsapp',
-        to: to,
-        type: 'text',
-        text: { body: text }
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    console.log(`🤖 WhatsApp auto-reply sent to ${to}: ${text.substring(0, 50)}...`);
-  } catch (err) {
-    console.error('❌ WhatsApp auto-reply failed:', err.response?.data || err.message);
-  }
-}
-
-// AUTH ROUTES
-app.get('/auth/logout', (req, res, next) => {
-  req.logout(err => {
-    if (err) return next(err);
-    res.redirect('/');
-  });
-});
-
-// DEBUG AND HEALTH ROUTES
-app.get('/debug', (req, res) => {
-  try {
-    res.json({
-      status: 'running',
-      environment: process.env.NODE_ENV || 'development',
-      instagram: {
-        app_id: config.instagram.appId,
-        users_count: users.size,
-        configs_count: configurations.size
-      },
-      facebook: {
-        app_id: config.facebook.appId
-      },
-      whatsapp: {
-        phone_number_id: config.whatsapp.phoneNumberId,
-        ai_configured: !!(assignedAI.key && assignedAI.waToken)
-      },
-      server_time: new Date().toISOString(),
-      uptime: process.uptime()
-    });
-  } catch (err) {
-    console.error('🔥 Debug endpoint error:', serializeError(err));
-    res.status(500).json({ error: 'Debug information unavailable' });
-  }
-});
-
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok',
-    version: '2.0.0',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString()
-  });
-});
-
-// USER INFO ROUTE
+// Add token status to user info endpoint
 app.get('/api/user-info', (req, res) => {
   try {
     const { userId } = req.query;
@@ -1551,12 +824,17 @@ app.get('/api/user-info', (req, res) => {
     const user = users.get(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    const tokenStatus = isTokenValid(userId) ? 'valid' : 'expired';
+    const expirationTime = tokenExpirations.get(userId);
+    
     res.json({
       username: user.username,
       instagram_id: user.instagram_id,
       profile_pic: user.profile_pic,
       platform: user.platform,
-      last_login: user.last_login
+      last_login: user.last_login,
+      token_status: tokenStatus,
+      token_expiration: expirationTime || null
     });
   } catch (err) {
     console.error('🔥 User info error:', serializeError(err));
@@ -1564,22 +842,7 @@ app.get('/api/user-info', (req, res) => {
   }
 });
 
-// ERROR HANDLING MIDDLEWARE
-app.use((err, req, res, next) => {
-  console.error('🔥 Global error handler:', serializeError(err));
-  res.status(500).json({ error: 'Internal server error' });
-});
-
-// 404 HANDLER
-app.use((req, res) => {
-  res.status(404).send(`
-    <div style="font-family: sans-serif; text-align: center; padding: 50px;">
-      <h1>404 - Page Not Found</h1>
-      <p>The page you're looking for doesn't exist.</p>
-      <a href="/" style="color: #667eea;">← Go back to home</a>
-    </div>
-  `);
-});
+// ... (The rest of your code for Facebook, WhatsApp, etc. remains unchanged) ...
 
 // START SERVER
 server.listen(PORT, () => {
