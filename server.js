@@ -19,7 +19,7 @@ const PORT = process.env.PORT || 10000;
 const config = {
   instagram: {
     appId: process.env.INSTAGRAM_APP_ID || '1477959410285896',
-    appSecret: process.env.INSTAGRAM_APP_SECRET,
+    appSecret: process.env.INSTAGRAM_APP_SECRET || 'fc7fbca3fbecd5bc6b06331bc4da17c9',
     redirectUri: process.env.REDIRECT_URI || 'https://work-flow-ig-1.onrender.com/auth/callback'
   },
   facebook: {
