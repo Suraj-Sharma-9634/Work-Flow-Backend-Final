@@ -842,7 +842,68 @@ app.get('/api/user-info', (req, res) => {
   }
 });
 
-// ... (The rest of your code for Facebook, WhatsApp, etc. remains unchanged) ...
+// MESSENGER ENDPOINTS
+app.get('/api/messenger/conversations', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+    const user = users.get(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Simulate conversations (replace with Facebook Graph API if needed)
+    res.json([
+      { id: 'conv1', name: 'John Doe' },
+      { id: 'conv2', name: 'Jane Smith' }
+    ]);
+  } catch (err) {
+    res.status(500).json({ error: 'Error fetching Messenger conversations' });
+  }
+});
+
+app.get('/api/messenger/messages', async (req, res) => {
+  try {
+    const { userId, conversationId } = req.query;
+    if (!userId || !conversationId) return res.status(400).json({ error: 'Missing required fields' });
+
+    // Simulate messages (replace with Facebook Graph API if needed)
+    res.json([
+      { id: 'msg1', sender_name: 'John Doe', text: 'Hello!' },
+      { id: 'msg2', sender_name: 'You', text: 'Hi there!' }
+    ]);
+  } catch (err) {
+    res.status(500).json({ error: 'Error fetching Messenger messages' });
+  }
+});
+
+app.post('/api/messenger/send-message', async (req, res) => {
+  try {
+    const { userId, conversationId, message } = req.body;
+    if (!userId || !conversationId || !message) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    // TODO: Integrate with Facebook Messenger API here
+    // For now, just simulate success:
+    res.json({ success: true, to: conversationId, message });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to send Messenger message' });
+  }
+});
+
+// WHATSAPP ENDPOINT
+app.post('/api/whatsapp/send-message', async (req, res) => {
+  try {
+    const { userId, phoneNumber, message } = req.body;
+    if (!userId || !phoneNumber || !message) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    // TODO: Integrate with WhatsApp Business API here
+    // For now, just simulate success:
+    res.json({ success: true, to: phoneNumber, message });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to send WhatsApp message' });
+  }
+});
 
 // START SERVER
 server.listen(PORT, () => {
