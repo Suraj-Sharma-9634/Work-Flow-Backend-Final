@@ -8,7 +8,17 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+// Facebook OAuth start
+app.get('/auth/facebook', passport.authenticate('facebook', { scope: ['email', 'public_profile', 'pages_show_list', 'pages_messaging'] }));
 
+// Facebook OAuth callback
+app.get('/auth/facebook/callback', passport.authenticate('facebook', {
+  failureRedirect: '/',
+  session: true
+}), (req, res) => {
+  // You can store user info here if needed
+  res.redirect('/messenger-dashboard');
+});
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
