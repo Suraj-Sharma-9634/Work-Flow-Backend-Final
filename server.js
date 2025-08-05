@@ -8,6 +8,13 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+
+const PORT = process.env.PORT || 10000;
+
+const app = express(); // must come first!
+const server = http.createServer(app); // then create server
+const io = new Server(server, { cors: { origin: "*" } }); // then create socket.io
+
 // Facebook OAuth start
 app.get('/auth/facebook', passport.authenticate('facebook', { scope: ['email', 'public_profile', 'pages_show_list', 'pages_messaging'] }));
 
@@ -19,11 +26,6 @@ app.get('/auth/facebook/callback', passport.authenticate('facebook', {
   // You can store user info here if needed
   res.redirect('/messenger-dashboard');
 });
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-
-const PORT = process.env.PORT || 10000;
 
 // Configuration
 const config = {
@@ -53,7 +55,6 @@ console.log(`Instagram App ID: ${config.instagram.appId ? 'Set' : '❌ MISSING'}
 console.log(`Facebook App ID: ${config.facebook.appId ? 'Set' : '❌ MISSING'}`);
 console.log(`WhatsApp Phone ID: ${config.whatsapp.phoneNumberId ? 'Set' : '❌ MISSING'}`);
 console.log('=====================================');
-
 // Middleware
 app.use(cors());
 app.use(express.json());
